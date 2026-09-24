@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cryptogram Duel</title>
+  <style>
+    :root {
+      --primary: #2b7de9;
+      --background: #f9fafb;
+      --card-bg: #ffffff;
+      --border-color: #ddd;
+      --text-color: #333;
+    }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: var(--background);
+      color: var(--text-color);
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    h1, h2 {
+      text-align: center;
+      color: var(--primary);
+    }
+
+    input, textarea, button {
+      width: 100%;
+      padding: 0.75rem;
+      margin: 0.5rem 0;
+      font-size: 1rem;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      box-sizing: border-box;
+    }
+
+    button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    button:hover {
+      background: #1a5fb4;
+    }
+
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }
+
+    #chat {
+      height: 300px;
+      overflow-y: auto;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      background: #fff;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .message {
+      margin: 0.75rem 0;
+    }
+
+    .from {
+      font-weight: bold;
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+
+    .puzzle {
+      background: #eef2f7;
+      border-radius: 6px;
+      padding: 1rem;
+    }
+
+    .cipher {
+      font-family: monospace;
+      background: #dce4ec;
+      padding: 0.5rem;
+      margin: 0.5rem 0;
+      border-radius: 4px;
+    }
+
+    #scoreboard {
+      margin-top: 2rem;
+    }
+
+    #scoreTable {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+    }
+
+    #scoreTable th,
+    #scoreTable td {
+      border: 1px solid #ccc;
+      padding: 0.75rem;
+      text-align: center;
+    }
+
+    #scoreTable th {
+      background: #f0f4f8;
+      color: #333;
+    }
+
+    #scoreTable tr:nth-child(even) {
+      background-color: #f9f9f9;
+    }
+  </style>
+</head>
+<body>
+  <h1>Cryptogram Duel</h1>
+
+  <div class="card">
+    <input id="username" placeholder="Your username…" />
+    <button id="btnRegister">Register</button>
+  </div>
+
+  <div class="card">
+    <input id="peername" placeholder="Chat with…" />
+    <button id="btnFetchPeer">Fetch Peer</button>
+  </div>
+
+  <div id="chat" class="card"></div>
+
+  <div class="card">
+    <textarea id="cryptogramPlain" placeholder="Enter phrase for cryptogram…"></textarea>
+    <button id="btnSendPuzzle">Send Cryptogram</button>
+  </div>
+
+  <div class="card" id="scoreboard">
+    <h2>Scoreboard</h2>
+    <table id="scoreTable">
+      <thead>
+        <tr>
+          <th>Rank</th>
+          <th>User</th>
+          <th>Score</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Scores will be populated here -->
+      </tbody>
+    </table>
+  </div>
+
+<script>
+const API = '';  // same-origin
+
+// b64 ↔ ArrayBuffer
+const toBuf  = b64 => Uint8Array.from(atob(b64),c=>c.charCodeAt(0)).buffer;
+const fromBuf= buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+
+let peerPublicKey, myUsername;
+
+// 1) Register
+async function register() {
+  myUsername = document.getElementById('username').value.trim();
+  if (!myUsername) return alert("Enter username");
+
+  let csrPub = localStorage.getItem('csrPub');
+  if (!csrPub) {
+    const kp = await crypto.subtle.generateKey(
+      { name:"RSA-OAEP", modulusLength:2048, publicExponent:new Uint8Array([1,0,1]), hash:"SHA-256" },
+      true, ["encrypt","decrypt"]
+    );
+    const spki = await crypto.subtle.exportKey("spki", kp.publicKey);
+    csrPub = `-----BEGIN PUBLIC KEY-----\n${fromBuf(spki).match(/.{1,64}/g).join('\n')}\n-----END PUBLIC KEY-----\n`;
+    localStorage.setItem('csrPub', csrPub);
+  }
+
+  const res = await fetch(`${API}/api/register`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ username: myUsername, publicKeyPem: csrPub })
+  });
+  const j = await res.json();
+  alert(j.certificate ? "Registered!" : "Error: " + JSON.stringify(j));
+  fetchScoreboard();
+}
+
+// 2) Fetch peer’s SPKI
+async function fetchPeer() {
+  const peer = document.getElementById('peername').value.trim();
+  if (!peer) return alert("Enter peer username");
+  const res = await fetch(`${API}/api/cert/${encodeURIComponent(peer)}`);
+  const j   = await res.json();
+  if (!j.publicKeyPem) return alert("Error: " + JSON.stringify(j));
+
+  // Strip PEM headers and import
+  const b64 = j.publicKeyPem.replace(/-----(BEGIN|END)[\w ]+-----/g,'').replace(/\s+/g,'');
+  const buf = Uint8Array.from(atob(b64),c=>c.charCodeAt(0)).buffer;
+  peerPublicKey = await crypto.subtle.importKey(
+    "spki", buf,
+    { name:"RSA-OAEP", hash:"SHA-256" },
+    false, ["encrypt"]
+  );
+  alert("Peer key loaded");
+}
+
+// Envelope‐encrypt & send cryptogram
+async function sendPuzzle() {
+  if (!peerPublicKey || !myUsername) {
+    return alert("Register & load peer first");
+  }
+  const phrase = document.getElementById('cryptogramPlain').value.trim();
+  if (!phrase) return;
+
+  // Build substitution key
+  const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+  const B = [...A].sort(() => Math.random() - 0.5);
+  const keyMap = Object.fromEntries(A.map((c,i)=>[c, B[i]]));
+
+  // Apply to phrase
+  const puzzle = phrase.toUpperCase().replace(/[A-Z]/g, c => keyMap[c] || c);
+
+  // AES-GCM encrypt
+  const dek = await crypto.subtle.generateKey({ name:"AES-GCM", length:256 }, true, ["encrypt","decrypt"]);
+  const iv  = crypto.getRandomValues(new Uint8Array(12));
+  const ct  = await crypto.subtle.encrypt({ name:"AES-GCM", iv }, dek, new TextEncoder().encode(puzzle));
+  const raw = await crypto.subtle.exportKey("raw", dek);
+
+  // Send raw DEK + puzzle + metadata=keyMap
+  await fetch(`${API}/api/message`, {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json' },
+    body: JSON.stringify({
+      from: myUsername,
+      to:   document.getElementById('peername').value.trim(),
+      ciphertext: fromBuf(ct),
+      iv:         fromBuf(iv),
+      dek:        fromBuf(raw),
+      metadata:   btoa(JSON.stringify(keyMap))
+    })
+  });
+
+  appendChat("Me (puzzle)", puzzle);
+  document.getElementById('cryptogramPlain').value = '';
+}
+
+// 3) Poll & decrypt
+async function poll() {
+  if (!myUsername) return;
+  const res = await fetch(`${API}/api/messages?for=${encodeURIComponent(myUsername)}`);
+  const j   = await res.json();
+  for (const m of j.messages || []) {
+    // unwrap key
+    const r = await fetch(`${API}/api/unwrap`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ wrappedKey: m.wrappedKey })
+    });
+    const { dek } = await r.json();
+    const dekKey  = await crypto.subtle.importKey("raw", toBuf(dek), { name:"AES-GCM" }, false, ["decrypt"]);
+
+    // decrypt
+    let text;
+    try {
+      const pt = await crypto.subtle.decrypt(
+        { name:"AES-GCM", iv: new Uint8Array(toBuf(m.iv)) },
+        dekKey,
+        toBuf(m.ciphertext)
+      );
+      text = new TextDecoder().decode(pt);
+    } catch {
+      text = "(decrypt error)";
+    }
+
+    if (m.metadata) {
+      // Render cryptogram
+      const keyMap = JSON.parse(atob(m.metadata));
+      renderPuzzle(m.id, m.from, text, keyMap);
+    } else {
+      appendChat(m.from, text);
+    }
+  }
+}
+
+// Render puzzle UI
+function renderPuzzle(id, from, cipher, keyMap) {
+  // Build reverse map
+  const revMap = Object.fromEntries(
+    Object.entries(keyMap).map(([p,c])=>[c,p])
+  );
+
+  const container = document.createElement('div');
+  container.className = 'puzzle message';
+  container.innerHTML = `
+    <span class="from">${from} (puzzle):</span>
+    <div class="cipher">${cipher}</div>
+    <input placeholder="Your guess…" />
+    <button>Solve</button>
+    <div class="feedback"></div>
+  `;
+
+  const inp = container.querySelector('input');
+  const btn = container.querySelector('button');
+  const fb  = container.querySelector('.feedback');
+
+  btn.onclick = async () => {
+    const guess = inp.value.trim().toUpperCase();
+    // Locally decrypt
+    const solved = cipher.replace(/[A-Z]/g, c => revMap[c] || c);
+
+    if (guess === solved) {
+      fb.textContent = "🎉 Correct!";
+      // Disable further guesses
+      inp.disabled = true;
+      btn.disabled = true;
+
+      // Award point
+      await fetch(`${API}/api/score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ solver: myUsername })
+      });
+      fetchScoreboard();
+    } else {
+      fb.textContent = "❌ Try again.";
+    }
+  };
+
+  document.getElementById('chat').appendChild(container);
+  container.scrollIntoView();
+}
+
+// Append text chat
+function appendChat(who, txt) {
+  const d = document.createElement('div');
+  d.className = 'message';
+  d.innerHTML = `<span class="from">${who}:</span> ${txt}`;
+  document.getElementById('chat').appendChild(d);
+  d.scrollIntoView();
+}
+
+// 4) Scoreboard
+async function fetchScoreboard() {
+  const res = await fetch(`${API}/api/scoreboard`);
+  const { scoreboard } = await res.json();
+  const tbody = document.querySelector("#scoreTable tbody");
+  tbody.innerHTML = "";  // clear existing rows
+
+  scoreboard.forEach((entry, index) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${index + 1}</td>
+      <td>${entry.user}</td>
+      <td>${entry.score}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// Wire events
+document.getElementById('btnRegister').onclick   = register;
+document.getElementById('btnFetchPeer').onclick  = fetchPeer;
+document.getElementById('btnSendPuzzle').onclick = sendPuzzle;
+setInterval(poll, 3000);
+setInterval(fetchScoreboard, 5000);
+</script>
+</body>
+</html>

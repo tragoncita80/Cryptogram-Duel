@@ -1,0 +1,19 @@
+{
+  "CN": "Banana CA",
+  "key": {
+    "algo": "rsa",
+    "size": 4096
+  },
+  "names": [
+    {
+      "C":  "TW",
+      "ST": "Taipei",
+      "L":  "Tamsui",
+      "O":  "Banana Inc.",
+      "OU": "Certificate Authority"
+    }
+  ],
+  "ca": {
+    "expiry": "87600h"       
+  }
+}
